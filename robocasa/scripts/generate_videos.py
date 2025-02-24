@@ -162,7 +162,7 @@ def main(
                 render=render,
                 video_writer=video_writer,
                 video_skip=video_skip,
-                camera_names=render_image_names,
+                camera_names=[camera],
                 first=first,
                 verbose=debug,
                 camera_height=camera_height,

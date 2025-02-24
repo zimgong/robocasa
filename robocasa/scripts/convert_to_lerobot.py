@@ -384,7 +384,8 @@ if __name__ == "__main__":
     #         if file == "demo_gentex_im128_randcams.hdf5":
     #             hdf5_file = os.path.join(root, file)
     #             break
-    hdf5_file = f"{src_path}/{task_id}/2024-04-25/demo_gentex_im128_randcams.hdf5"
+    # hdf5_file = f"{src_path}/{task_id}/2024-04-25/demo_gentex_im128_randcams.hdf5"
+    hdf5_file = f"{src_path}/{task_id}/2024-04-25/demo.hdf5"
     dataset_base = f"robocasa/{task_id}"
 
     assert hdf5_file, f"hdf5 file not found."

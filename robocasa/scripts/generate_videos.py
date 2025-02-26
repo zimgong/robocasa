@@ -1,4 +1,6 @@
 import os
+import json
+import time
 import random
 
 import h5py
@@ -7,11 +9,156 @@ import numpy as np
 from termcolor import colored
 
 import robosuite
-from robocasa.scripts.playback_dataset import (
-    playback_trajectory_with_env,
-    playback_trajectory_with_obs,
-    get_env_metadata_from_dataset,
-)
+from robocasa.scripts.playback_dataset import get_env_metadata_from_dataset, reset_to
+
+
+def playback_trajectory_with_env_multi_cam(
+    env,
+    initial_state,
+    states,
+    actions=None,
+    render=False,
+    video_writers=None,
+    video_skip=5,
+    camera_names=None,
+    first=False,
+    verbose=False,
+    camera_height=512,
+    camera_width=512,
+):
+    """
+    Helper function to playback a single trajectory using the simulator environment.
+    If @actions are not None, it will play them open-loop after loading the initial state.
+    Otherwise, @states are loaded one by one.
+
+    Args:
+        env (instance of EnvBase): environment
+        initial_state (dict): initial simulation state to load
+        states (np.array): array of simulation states to load
+        actions (np.array): if provided, play actions back open-loop instead of using @states
+        render (bool): if True, render on-screen
+        video_writers (list of imageio writers): video writers
+        video_skip (int): determines rate at which environment frames are written to video
+        camera_names (list): determines which camera(s) are used for rendering. Pass more than
+            one to output a video with multiple camera views concatenated horizontally.
+        first (bool): if True, only use the first frame of each episode.
+    """
+    write_video = video_writers is not None
+    video_count = 0
+    assert not (render and write_video)
+
+    # load the initial state
+    ## this reset call doesn't seem necessary.
+    ## seems ok to remove but haven't fully tested it.
+    ## removing for now
+    # env.reset()
+
+    if verbose:
+        ep_meta = json.loads(initial_state["ep_meta"])
+        lang = ep_meta.get("lang", None)
+        if lang is not None:
+            print(colored(f"Instruction: {lang}", "green"))
+        print(colored("Spawning environment...", "yellow"))
+    reset_to(env, initial_state)
+
+    traj_len = states.shape[0]
+    action_playback = actions is not None
+    if action_playback:
+        assert states.shape[0] == actions.shape[0]
+
+    if render is False:
+        print(colored("Running episode...", "yellow"))
+
+    for i in range(traj_len):
+        start = time.time()
+
+        if action_playback:
+            env.step(actions[i])
+            if i < traj_len - 1:
+                # check whether the actions deterministically lead to the same recorded states
+                state_playback = np.array(env.sim.get_state().flatten())
+                if not np.all(np.equal(states[i + 1], state_playback)):
+                    err = np.linalg.norm(states[i + 1] - state_playback)
+                    if verbose or i == traj_len - 2:
+                        print(
+                            colored(
+                                "warning: playback diverged by {} at step {}".format(
+                                    err, i
+                                ),
+                                "yellow",
+                            )
+                        )
+        else:
+            reset_to(env, {"states": states[i]})
+
+        # on-screen render
+        if render:
+            if env.viewer is None:
+                env.initialize_renderer()
+
+            # so that mujoco viewer renders
+            env.viewer.update()
+
+            max_fr = 60
+            elapsed = time.time() - start
+            diff = 1 / max_fr - elapsed
+            if diff > 0:
+                time.sleep(diff)
+
+        # video render
+        if write_video:
+            if video_count % video_skip == 0:
+                for cam_name, video_writer in zip(camera_names, video_writers):
+                    im = env.sim.render(
+                        height=camera_height, width=camera_width, camera_name=cam_name
+                    )[::-1]
+                    video_writer.append_data(im)
+
+            video_count += 1
+
+        if first:
+            break
+
+    if render:
+        env.viewer.close()
+        env.viewer = None
+
+
+def playback_trajectory_with_obs_multi_cam(
+    traj_grp,
+    video_writer,
+    video_skip=5,
+    image_names=None,
+    first=False,
+):
+    """
+    This function reads all "rgb" observations in the dataset trajectory and
+    writes them into a video.
+
+    Args:
+        traj_grp (hdf5 file group): hdf5 group which corresponds to the dataset trajectory to playback
+        video_writer (imageio writer): video writer
+        video_skip (int): determines rate at which environment frames are written to video
+        image_names (list): determines which image observations are used for rendering. Pass more than
+            one to output a video with multiple image observations concatenated horizontally.
+        first (bool): if True, only use the first frame of each episode.
+    """
+    assert (
+        image_names is not None
+    ), "error: must specify at least one image observation to use in @image_names"
+    video_count = 0
+
+    traj_len = traj_grp["obs/{}".format(image_names[0] + "_image")].shape[0]
+    for i in range(traj_len):
+        if video_count % video_skip == 0:
+            # concatenate image obs together
+            im = [traj_grp["obs/{}".format(k + "_image")][i] for k in image_names]
+            frame = np.concatenate(im, axis=1)
+            video_writer.append_data(frame)
+        video_count += 1
+
+        if first:
+            break
 
 
 def main(
@@ -116,58 +263,62 @@ def main(
         else:
             raise ValueError("Episode {} already exists".format(ep))
 
+        video_writers = []
         for camera in render_image_names:
             video_path = os.path.join(src_ep_path, "{}.mp4".format(camera))
             video_writer = imageio.get_writer(
                 video_path, fps=20, codec="av1", pixelformat="yuv420p"
             )
-
-            if use_obs:
-                playback_trajectory_with_obs(
-                    traj_grp=f["data/{}".format(ep)],
-                    video_writer=video_writer,
-                    video_skip=1,
-                    image_names=[camera],
-                    first=False,
-                )
+            video_writers.append(video_writer)
+    
+        if use_obs:
+            playback_trajectory_with_obs_multi_cam(
+                traj_grp=f["data/{}".format(ep)],
+                video_writers=video_writers,
+                video_skip=1,
+                image_names=render_image_names,
+                first=False,
+            )
+            for video_writer in video_writers:
                 video_writer.close()
-                continue
+            continue
 
-            # prepare initial state to reload from
-            states = f["data/{}/states".format(ep)][()]
-            initial_state = dict(states=states[0])
-            initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"]
-            initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get(
-                "ep_meta", None
-            )
+        # prepare initial state to reload from
+        states = f["data/{}/states".format(ep)][()]
+        initial_state = dict(states=states[0])
+        initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"]
+        initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get(
+            "ep_meta", None
+        )
 
-            if extend_states:
-                states = np.concatenate((states, [states[-1]] * 50))
+        if extend_states:
+            states = np.concatenate((states, [states[-1]] * 50))
 
-            # supply actions if using open-loop action playback
-            actions = None
-            assert not (
-                use_actions and use_abs_actions
-            )  # cannot use both relative and absolute actions
-            if use_actions:
-                actions = f["data/{}/actions".format(ep)][()]
-            elif use_abs_actions:
-                actions = f["data/{}/actions_abs".format(ep)][()]  # absolute actions
+        # supply actions if using open-loop action playback
+        actions = None
+        assert not (
+            use_actions and use_abs_actions
+        )  # cannot use both relative and absolute actions
+        if use_actions:
+            actions = f["data/{}/actions".format(ep)][()]
+        elif use_abs_actions:
+            actions = f["data/{}/actions_abs".format(ep)][()]  # absolute actions
 
-            playback_trajectory_with_env(
-                env=env,
-                initial_state=initial_state,
-                states=states,
-                actions=actions,
-                render=render,
-                video_writer=video_writer,
-                video_skip=video_skip,
-                camera_names=[camera],
-                first=first,
-                verbose=debug,
-                camera_height=camera_height,
-                camera_width=camera_width,
-            )
+        playback_trajectory_with_env_multi_cam(
+            env=env,
+            initial_state=initial_state,
+            states=states,
+            actions=actions,
+            render=render,
+            video_writers=video_writers,
+            video_skip=video_skip,
+            camera_names=render_image_names,
+            first=first,
+            verbose=debug,
+            camera_height=camera_height,
+            camera_width=camera_width,
+        )
+        for video_writer in video_writers:
             video_writer.close()
 
     f.close()
@@ -179,8 +330,9 @@ def main(
 
 if __name__ == "__main__":
     # dataset = "datasets/v0.1/single_stage/kitchen_coffee/CoffeePressButton/2024-04-25/demo_gentex_im128_randcams.hdf5"
-    dataset = "datasets/v0.1/single_stage/kitchen_coffee/CoffeePressButton/2024-04-25/demo.hdf5"
-    filter_key = "valid"
+    dataset = "datasets/v0.1/single_stage/kitchen_coffee/CoffeeServeMug/2024-05-01/demo.hdf5"
+    # filter_key = "valid"
+    filter_key = None
     n = None
     use_obs = False
     use_actions = False

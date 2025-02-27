@@ -248,22 +248,14 @@ def load_local_dataset(
     ob_dir = Path(src_path) / f"{task_id}" / f"{demo_id}"
 
     demo_len = f["data/{}/states".format(demo_id)].shape[0]
-    vel_start_idx = (demo_len - 1) / 2 + 2
+    vel_start_idx = int((demo_len - 1) / 2 + 2)
     state_pos = np.array(f["data/{}/states".format(demo_id)][:, 1:14])
     state_vel = np.array(
         f["data/{}/states".format(demo_id)][:, vel_start_idx : vel_start_idx + 13]
     )
-    action_pos = np.zeros((demo_len, 13))
-    action_vel = np.zeros((demo_len, 13))
-    action_pos[: demo_len - 1, :] = np.array(
-        f["data/{}/actions".format(demo_id)][1:, 1:14]
-    )
-    action_vel[: demo_len - 1, :] = np.array(
-        f["data/{}/actions".format(demo_id)][1:, vel_start_idx : vel_start_idx + 13]
-    )
-
     states_value = np.hstack([state_pos, state_vel]).astype(np.float32)
-    action_value = np.hstack([action_pos, action_vel]).astype(np.float32)
+    action_value = np.zeros((demo_len, 13))
+    action_value[:demo_len - 1, :] = np.array(f["data/{}/states".format(demo_id)][1:, 1:14]).astype(np.float32)
 
     frames = [
         {

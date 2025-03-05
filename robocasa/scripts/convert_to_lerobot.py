@@ -30,7 +30,7 @@ EYE_IN_HAND = "robot0_eye_in_hand.mp4"
 FEATURES = {
     "observation.images.agentview_left": {
         "dtype": "video",
-        "shape": [128, 128, 3],
+        "shape": [512, 512, 3],
         "names": ["height", "width", "channel"],
         "video_info": {
             "video.fps": 20.0,
@@ -42,7 +42,7 @@ FEATURES = {
     },
     "observation.images.agentview_right": {
         "dtype": "video",
-        "shape": [128, 128, 3],
+        "shape": [512, 512, 3],
         "names": ["height", "width", "channel"],
         "video_info": {
             "video.fps": 20.0,
@@ -54,7 +54,7 @@ FEATURES = {
     },
     "observation.images.eye_in_hand": {
         "dtype": "video",
-        "shape": [128, 128, 3],
+        "shape": [512, 512, 3],
         "names": ["height", "width", "channel"],
         "video_info": {
             "video.fps": 20.0,
@@ -247,15 +247,19 @@ def load_local_dataset(
 
     ob_dir = Path(src_path) / f"{task_id}" / f"{demo_id}"
 
-    demo_len = f["data/{}/states".format(demo_id)].shape[0]
-    vel_start_idx = int((demo_len - 1) / 2 + 2)
-    state_pos = np.array(f["data/{}/states".format(demo_id)][:, 1:14])
+    # Note: the state is downsampled by 5x to comply with the video fps
+    demo_dim = f["data/{}/states".format(demo_id)].shape[1]
+    vel_start_idx = int((demo_dim - 1) / 2 + 2)
+    state_pos = np.array(f["data/{}/states".format(demo_id)][::5, 1:14])
     state_vel = np.array(
-        f["data/{}/states".format(demo_id)][:, vel_start_idx : vel_start_idx + 13]
+        f["data/{}/states".format(demo_id)][::5, vel_start_idx : vel_start_idx + 13]
     )
+    demo_len = state_pos.shape[0]
     states_value = np.hstack([state_pos, state_vel]).astype(np.float32)
     action_value = np.zeros((demo_len, 13))
-    action_value[:demo_len - 1, :] = np.array(f["data/{}/states".format(demo_id)][1:, 1:14]).astype(np.float32)
+    action_value[: demo_len - 1, :] = np.array(
+        f["data/{}/states".format(demo_id)][::5, 1:14][1:]
+    ).astype(np.float32)
 
     frames = [
         {
@@ -372,6 +376,7 @@ def main(
 
 
 if __name__ == "__main__":
+    # src_path = "/home/zimgong/Documents/datasets/v0.1"
     src_path = "datasets/v0.1"
     task_id = "single_stage/kitchen_coffee/CoffeePressButton"
     filter_key = "valid"

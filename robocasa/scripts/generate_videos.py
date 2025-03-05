@@ -126,7 +126,7 @@ def playback_trajectory_with_env_multi_cam(
 
 def playback_trajectory_with_obs_multi_cam(
     traj_grp,
-    video_writer,
+    video_writers,
     video_skip=5,
     image_names=None,
     first=False,
@@ -152,9 +152,9 @@ def playback_trajectory_with_obs_multi_cam(
     for i in range(traj_len):
         if video_count % video_skip == 0:
             # concatenate image obs together
-            im = [traj_grp["obs/{}".format(k + "_image")][i] for k in image_names]
-            frame = np.concatenate(im, axis=1)
-            video_writer.append_data(frame)
+            for image_name, video_writer in zip(image_names, video_writers):
+                im = traj_grp["obs/{}".format(image_name + "_image")][i]
+                video_writer.append_data(im)
         video_count += 1
 
         if first:
@@ -270,14 +270,14 @@ def main(
                 video_path, fps=20, codec="av1", pixelformat="yuv420p"
             )
             video_writers.append(video_writer)
-    
+
         if use_obs:
             playback_trajectory_with_obs_multi_cam(
                 traj_grp=f["data/{}".format(ep)],
                 video_writers=video_writers,
-                video_skip=1,
+                video_skip=video_skip,
                 image_names=render_image_names,
-                first=False,
+                first=first,
             )
             for video_writer in video_writers:
                 video_writer.close()
@@ -287,9 +287,7 @@ def main(
         states = f["data/{}/states".format(ep)][()]
         initial_state = dict(states=states[0])
         initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"]
-        initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get(
-            "ep_meta", None
-        )
+        initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get("ep_meta", None)
 
         if extend_states:
             states = np.concatenate((states, [states[-1]] * 50))
@@ -329,10 +327,10 @@ def main(
 
 
 if __name__ == "__main__":
-    # dataset = "datasets/v0.1/single_stage/kitchen_coffee/CoffeePressButton/2024-04-25/demo_gentex_im128_randcams.hdf5"
-    dataset = "datasets/v0.1/single_stage/kitchen_coffee/CoffeeServeMug/2024-05-01/demo.hdf5"
-    # filter_key = "valid"
-    filter_key = None
+    # dataset = "/home/zimgong/Documents/datasets/v0.1/single_stage/kitchen_coffee/CoffeePressButton/2024-04-25/demo_gentex_im128_randcams.hdf5"
+    dataset = "datasets/v0.1/single_stage/kitchen_coffee/CoffeePressButton/2024-04-25/demo.hdf5"
+    filter_key = "valid"
+    # filter_key = None
     n = None
     use_obs = False
     use_actions = False

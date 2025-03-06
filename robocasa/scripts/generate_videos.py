@@ -2,6 +2,7 @@ import os
 import json
 import time
 import random
+import argparse
 
 import h5py
 import imageio
@@ -326,40 +327,139 @@ def main(
         env.close()
 
 
+def get_playback_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        help="path to hdf5 dataset",
+    )
+    parser.add_argument(
+        "--filter_key",
+        type=str,
+        default=None,
+        help="(optional) filter key, to select a subset of trajectories in the file",
+    )
+
+    # number of trajectories to playback. If omitted, playback all of them.
+    parser.add_argument(
+        "--n",
+        type=int,
+        default=None,
+        help="(optional) stop after n trajectories are played",
+    )
+
+    # Use image observations instead of doing playback using the simulator env.
+    parser.add_argument(
+        "--use-obs",
+        action="store_true",
+        help="visualize trajectories with dataset image observations instead of simulator",
+    )
+
+    # Playback stored dataset actions open-loop instead of loading from simulation states.
+    parser.add_argument(
+        "--use-actions",
+        action="store_true",
+        help="use open-loop action playback instead of loading sim states",
+    )
+
+    # Playback stored dataset absolute actions open-loop instead of loading from simulation states.
+    parser.add_argument(
+        "--use-abs-actions",
+        action="store_true",
+        help="use open-loop action playback with absolute position actions instead of loading sim states",
+    )
+
+    # Whether to render playback to screen
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="on-screen rendering",
+    )
+
+    # Dump a video of the dataset playback to the specified path
+    parser.add_argument(
+        "--video_path",
+        type=str,
+        default=None,
+        help="(optional) render trajectories to this video file path",
+    )
+
+    # How often to write video frames during the playback
+    parser.add_argument(
+        "--video_skip",
+        type=int,
+        default=5,
+        help="render frames to video every n steps",
+    )
+
+    # camera names to render, or image observations to use for writing to video
+    parser.add_argument(
+        "--render_image_names",
+        type=str,
+        nargs="+",
+        default=None,
+        help="(optional) camera name(s) / image observation(s) to use for rendering on-screen or to video. Default is"
+        "None, which corresponds to a predefined camera for each env type",
+    )
+
+    # Only use the first frame of each episode
+    parser.add_argument(
+        "--first",
+        action="store_true",
+        help="only use the first frame of each episode",
+    )
+
+    parser.add_argument(
+        "--extend_states",
+        action="store_true",
+        help="play last step of episodes for 50 extra frames",
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="log additional information",
+    )
+
+    parser.add_argument(
+        "--camera_height",
+        type=int,
+        default=512,
+        help="(optional, for offscreen rendering) height of image observations",
+    )
+
+    parser.add_argument(
+        "--camera_width",
+        type=int,
+        default=512,
+        help="(optional, for offscreen rendering) width of image observations",
+    )
+
+    args = parser.parse_args()
+    return args
+
+
 if __name__ == "__main__":
-    # dataset = "/home/zimgong/Documents/datasets/v0.1/single_stage/kitchen_coffee/CoffeePressButton/2024-04-25/demo_gentex_im128_randcams.hdf5"
-    dataset = "datasets/v0.1/single_stage/kitchen_coffee/CoffeePressButton/2024-04-25/demo.hdf5"
-    filter_key = "valid"
-    # filter_key = None
-    n = None
-    use_obs = False
-    use_actions = False
-    use_abs_actions = False
-    render = False
-    video_skip = 5
+    args = get_playback_args()
     render_image_names = [
         "robot0_agentview_left",
         "robot0_agentview_right",
         "robot0_eye_in_hand",
     ]
-    first = False
-    extend_states = False
-    debug = True
-    camera_height = 512
-    camera_width = 512
     main(
-        dataset,
-        filter_key,
-        n,
-        use_obs,
-        use_actions,
-        use_abs_actions,
-        render,
-        video_skip,
+        args.dataset,
+        args.filter_key,
+        args.n,
+        args.use_obs,
+        args.use_actions,
+        args.use_abs_actions,
+        args.render,
+        args.video_skip,
         render_image_names,
-        first,
-        extend_states,
-        debug,
-        camera_height,
-        camera_width,
+        args.first,
+        args.extend_states,
+        args.debug,
+        args.camera_height,
+        args.camera_width
     )

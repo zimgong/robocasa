@@ -1,8 +1,7 @@
 import os
 import json
 import shutil
-
-# import logging
+import argparse
 from pathlib import Path
 from typing import Callable
 from functools import partial
@@ -14,14 +13,6 @@ from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-# from lerobot.common.datasets.compute_stats import compute_stats
-# from lerobot.common.datasets.utils import (
-#     STATS_PATH,
-#     check_timestamps_sync,
-#     get_episode_data_index,
-#     serialize_dict,
-#     write_json,
-# )
 
 AGENTVIEW_LEFT = "robot0_agentview_left.mp4"
 AGENTVIEW_RIGHT = "robot0_agentview_right.mp4"
@@ -209,42 +200,13 @@ class RoboCasaDataset(LeRobotDataset):
             self.episode_buffer = self.create_episode_buffer()
         self.consolidated = False
 
-    # def consolidate(self, run_compute_stats: bool = True, keep_image_files: bool = False) -> None:
-    #     self.hf_dataset = self.load_hf_dataset()
-    #     self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
-    #     check_timestamps_sync(self.hf_dataset, self.episode_data_index, self.tolerance_s)
-
-    #     if len(self.meta.video_keys) > 0:
-    #         self.meta.write_video_info()
-
-    #     if not keep_image_files:
-    #         img_dir = self.root / "images"
-    #         if img_dir.is_dir():
-    #             shutil.rmtree(self.root / "images")
-
-    #     video_files = list(self.root.rglob("*.mp4"))
-    #     assert len(video_files) == self.num_episodes * len(self.meta.video_keys)
-
-    #     parquet_files = list(self.root.rglob("*.parquet"))
-    #     assert len(parquet_files) == self.num_episodes
-
-    #     if run_compute_stats:
-    #         self.stop_image_writer()
-    #         self.meta.stats = compute_stats(self)
-    #         serialized_stats = serialize_dict(self.meta.stats)
-    #         write_json(serialized_stats, self.root / STATS_PATH)
-    #         self.consolidated = True
-    #     else:
-    #         logging.warning(
-    #             "Skipping computation of the dataset statistics, dataset is not fully consolidated."
-    #         )
-
 
 def load_local_dataset(
-    f: h5py.File, demo_id: str, src_path: str, task_id: str
+    demo_id: str, src_path: str, task_id: str, hdf5_file: str
 ) -> list | None:
     """Load local dataset and return a dict with observations and actions"""
 
+    f = h5py.File(hdf5_file, "r")
     ob_dir = Path(src_path) / f"{task_id}" / f"{demo_id}"
 
     # Note: the state is downsampled by 5x to comply with the video fps
@@ -322,22 +284,6 @@ def main(
     demos = [demos[i] for i in inds]
     env_meta = json.loads(f["data"].attrs["env_args"])
     robot_type = env_meta["env_kwargs"]["robots"]
-    # camera_names = env_meta["env_kwargs"]["camera_names"]
-    # features = {}
-    # for camera_name in camera_names:
-    #     features[f"observation.images.{camera_name}"] = {
-    #         "dtype": "video",
-    #         "shape": [128, 128, 3],
-    #         "names": ["height", "width", "channel"],
-    #         "video_info": {
-    #             "video.fps": 20.0,
-    #             "video.codec": "av1",
-    #             "video.pix_fmt": "yuv420p",
-    #             "video.is_depth_map": False,
-    #             "has_audio": False,
-    #         },
-    #     }
-    # features.update(FEATURES_INDEX)
 
     task_name = get_task_instruction(f, demos)
 
@@ -351,11 +297,11 @@ def main(
 
     if debug:
         raw_datasets = [
-            load_local_dataset(f, demo, src_path, task_id) for demo in tqdm(demos)
+            load_local_dataset(demo, src_path, task_id, hdf5_file) for demo in tqdm(demos)
         ]
     else:
         raw_datasets = process_map(
-            partial(load_local_dataset, f=f, src_path=src_path, task_id=task_id),
+            partial(load_local_dataset, src_path=src_path, task_id=task_id, hdf5_file=hdf5_file),
             demos,
             max_workers=os.cpu_count() // 2,
             desc="Generating local dataset",
@@ -376,22 +322,40 @@ def main(
 
 
 if __name__ == "__main__":
-    # src_path = "/home/zimgong/Documents/datasets/v0.1"
-    src_path = "datasets/v0.1"
-    task_id = "single_stage/kitchen_coffee/CoffeePressButton"
-    filter_key = "valid"
-    tgt_path = "datasets/lerobot"
-    debug = True
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--src_path",
+        type=str,
+        default="datasets/v0.1",
+    )
+    parser.add_argument(
+        "--task_id",
+        type=str,
+        default="single_stage/kitchen_coffee/CoffeePressButton",
+    )
+    parser.add_argument(
+        "--filter_key",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--tgt_path", 
+        type=str,
+        default="datasets/lerobot",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+    )
+    args = parser.parse_args()
 
-    # hdf5_file = None
-    # for root, dirs, files in os.walk(f"{src_path}/{task_id}"):
-    #     for file in files:
-    #         if file == "demo_gentex_im128_randcams.hdf5":
-    #             hdf5_file = os.path.join(root, file)
-    #             break
-    # hdf5_file = f"{src_path}/{task_id}/2024-04-25/demo_gentex_im128_randcams.hdf5"
-    hdf5_file = f"{src_path}/{task_id}/2024-04-25/demo.hdf5"
-    dataset_base = f"robocasa/{task_id}"
+    dataset_base = f"robocasa/{args.task_id.split('/')[-1]}"
+    hdf5_file = None
+    for root, dirs, files in os.walk(f"{args.src_path}/{args.task_id}"):
+        for file in files:
+            if file.endswith(".hdf5"):
+                hdf5_file = os.path.join(root, file)
+                break
+    assert Path(hdf5_file).exists, f"hdf5 file not found."
 
-    assert hdf5_file, f"hdf5 file not found."
-    main(src_path, tgt_path, task_id, dataset_base, hdf5_file, filter_key, debug)
+    main(args.src_path, args.tgt_path, args.task_id, dataset_base, hdf5_file, args.filter_key, args.debug)

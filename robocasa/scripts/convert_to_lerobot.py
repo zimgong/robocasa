@@ -331,7 +331,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--task_id",
         type=str,
-        default="single_stage/kitchen_coffee/CoffeePressButton",
+        required=True,
     )
     parser.add_argument(
         "--filter_key",

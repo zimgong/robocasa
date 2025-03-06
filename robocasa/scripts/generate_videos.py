@@ -162,46 +162,31 @@ def playback_trajectory_with_obs_multi_cam(
             break
 
 
-def main(
-    dataset: str,
-    filter_key: str | None = None,
-    n: int | None = None,
-    use_obs: bool = False,
-    use_actions: bool = False,
-    use_abs_actions: bool = False,
-    render: bool = False,
-    video_skip: int = 5,
-    render_image_names: list[str] | None = None,
-    first: bool = False,
-    extend_states: bool = False,
-    debug: bool = False,
-    camera_height: int = 512,
-    camera_width: int = 512,
-):
+def main(args):
     # some arg checking
-    write_video = render is not True
-    src_path = os.path.dirname("/".join(dataset.split("/")[:-1]))
+    write_video = args.render is not True
+    src_path = os.path.dirname("/".join(args.dataset.split("/")[:-1]))
 
     # Auto-fill camera rendering info if not specified
-    if render_image_names is None:
+    if args.render_image_names is None:
         # We fill in the automatic values
-        env_meta = get_env_metadata_from_dataset(dataset_path=dataset)
-        render_image_names = "robot0_agentview_center"
+        env_meta = get_env_metadata_from_dataset(dataset_path=args.dataset)
+        args.render_image_names = "robot0_agentview_center"
 
-    if render:
+    if args.render:
         # on-screen rendering can only support one camera
-        assert len(render_image_names) == 1
+        assert len(args.render_image_names) == 1
 
-    if use_obs:
+    if args.use_obs:
         assert write_video, "playback with observations can only write to video"
         assert (
-            not use_actions and not use_abs_actions
+            not args.use_actions and not args.use_abs_actions
         ), "playback with observations is offline and does not support action playback"
 
     env = None
 
     # create environment only if not playing back with observations
-    if not use_obs:
+    if not args.use_obs:
         # # need to make sure ObsUtils knows which observations are images, but it doesn't matter
         # # for playback since observations are unused. Pass a dummy spec here.
         # dummy_spec = dict(
@@ -212,8 +197,8 @@ def main(
         # )
         # initialize_obs_utils_with_obs_specs(obs_modality_specs=dummy_spec)
 
-        env_meta = get_env_metadata_from_dataset(dataset_path=dataset)
-        if use_abs_actions:
+        env_meta = get_env_metadata_from_dataset(dataset_path=args.dataset)
+        if args.use_abs_actions:
             env_meta["env_kwargs"]["controller_configs"][
                 "control_delta"
             ] = False  # absolute action space
@@ -225,7 +210,7 @@ def main(
         env_kwargs["has_offscreen_renderer"] = write_video
         env_kwargs["use_camera_obs"] = False
 
-        if debug:
+        if args.debug:
             print(
                 colored(
                     "Initializing environment for {}...".format(env_kwargs["env_name"]),
@@ -235,13 +220,14 @@ def main(
 
         env = robosuite.make(**env_kwargs)
 
-    f = h5py.File(dataset, "r")
+    f = h5py.File(args.dataset, "r")
 
     # list of all demonstration episodes (sorted in increasing number order)
-    if filter_key is not None:
-        print("using filter key: {}".format(filter_key))
+    if args.filter_key is not None:
+        print("using filter key: {}".format(args.filter_key))
         demos = [
-            elem.decode("utf-8") for elem in np.array(f["mask/{}".format(filter_key)])
+            elem.decode("utf-8")
+            for elem in np.array(f["mask/{}".format(args.filter_key)])
         ]
     elif "data" in f.keys():
         demos = list(f["data"].keys())
@@ -250,9 +236,9 @@ def main(
     demos = [demos[i] for i in inds]
 
     # maybe reduce the number of demonstrations to playback
-    if n is not None:
+    if args.n is not None:
         random.shuffle(demos)
-        demos = demos[:n]
+        demos = demos[:args.n]
 
     for ind in range(len(demos)):
         ep = demos[ind]
@@ -265,20 +251,20 @@ def main(
             raise ValueError("Episode {} already exists".format(ep))
 
         video_writers = []
-        for camera in render_image_names:
+        for camera in args.render_image_names:
             video_path = os.path.join(src_ep_path, "{}.mp4".format(camera))
             video_writer = imageio.get_writer(
                 video_path, fps=20, codec="av1", pixelformat="yuv420p"
             )
             video_writers.append(video_writer)
 
-        if use_obs:
+        if args.use_obs:
             playback_trajectory_with_obs_multi_cam(
                 traj_grp=f["data/{}".format(ep)],
                 video_writers=video_writers,
-                video_skip=video_skip,
-                image_names=render_image_names,
-                first=first,
+                video_skip=args.video_skip,
+                image_names=args.render_image_names,
+                first=args.first,
             )
             for video_writer in video_writers:
                 video_writer.close()
@@ -290,17 +276,17 @@ def main(
         initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"]
         initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get("ep_meta", None)
 
-        if extend_states:
+        if args.extend_states:
             states = np.concatenate((states, [states[-1]] * 50))
 
         # supply actions if using open-loop action playback
         actions = None
         assert not (
-            use_actions and use_abs_actions
+            args.use_actions and args.use_abs_actions
         )  # cannot use both relative and absolute actions
-        if use_actions:
+        if args.use_actions:
             actions = f["data/{}/actions".format(ep)][()]
-        elif use_abs_actions:
+        elif args.use_abs_actions:
             actions = f["data/{}/actions_abs".format(ep)][()]  # absolute actions
 
         playback_trajectory_with_env_multi_cam(
@@ -308,20 +294,21 @@ def main(
             initial_state=initial_state,
             states=states,
             actions=actions,
-            render=render,
+            render=args.render,
             video_writers=video_writers,
-            video_skip=video_skip,
-            camera_names=render_image_names,
-            first=first,
-            verbose=debug,
-            camera_height=camera_height,
-            camera_width=camera_width,
+            video_skip=args.video_skip,
+            camera_names=args.render_image_names,
+            first=args.first,
+            verbose=args.debug,
+            camera_height=args.camera_height,
+            camera_width=args.camera_width,
         )
         for video_writer in video_writers:
             video_writer.close()
 
     f.close()
-    print(colored("Saved videos to {}".format(src_path), "green"))
+    if write_video:
+        print(colored("Saved videos to {}".format(src_path), "green"))
 
     if env is not None:
         env.close()
@@ -398,7 +385,11 @@ def get_playback_args():
         "--render_image_names",
         type=str,
         nargs="+",
-        default=None,
+        default=[
+            "robot0_agentview_left",
+            "robot0_agentview_right",
+            "robot0_eye_in_hand",
+        ],
         help="(optional) camera name(s) / image observation(s) to use for rendering on-screen or to video. Default is"
         "None, which corresponds to a predefined camera for each env type",
     )
@@ -442,24 +433,4 @@ def get_playback_args():
 
 if __name__ == "__main__":
     args = get_playback_args()
-    render_image_names = [
-        "robot0_agentview_left",
-        "robot0_agentview_right",
-        "robot0_eye_in_hand",
-    ]
-    main(
-        args.dataset,
-        args.filter_key,
-        args.n,
-        args.use_obs,
-        args.use_actions,
-        args.use_abs_actions,
-        args.render,
-        args.video_skip,
-        render_image_names,
-        args.first,
-        args.extend_states,
-        args.debug,
-        args.camera_height,
-        args.camera_width
-    )
+    main(args)

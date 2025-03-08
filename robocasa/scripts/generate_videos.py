@@ -3,10 +3,13 @@ import json
 import time
 import random
 import argparse
+from functools import partial
 
 import h5py
 import imageio
 import numpy as np
+from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 from termcolor import colored
 
 import robosuite
@@ -165,7 +168,11 @@ def playback_trajectory_with_obs_multi_cam(
 def main(args):
     # some arg checking
     write_video = args.render is not True
-    src_path = os.path.dirname("/".join(args.dataset.split("/")[:-1]))
+    if args.dataset.endswith(".hdf5"):
+        src_path = os.path.dirname("/".join(args.dataset.split("/")[:-1]))
+    else:
+        src_path = args.dataset
+    assert not (args.render and write_video)  # either on-screen or video but not both
 
     # Auto-fill camera rendering info if not specified
     if args.render_image_names is None:
@@ -185,133 +192,148 @@ def main(args):
 
     env = None
 
-    # create environment only if not playing back with observations
-    if not args.use_obs:
-        # # need to make sure ObsUtils knows which observations are images, but it doesn't matter
-        # # for playback since observations are unused. Pass a dummy spec here.
-        # dummy_spec = dict(
-        #     obs=dict(
-        #             low_dim=["robot0_eef_pos"],
-        #             rgb=[],
-        #         ),
-        # )
-        # initialize_obs_utils_with_obs_specs(obs_modality_specs=dummy_spec)
+    hdf5_files = []
+    if args.dataset.endswith(".hdf5"):
+        hdf5_files.append(args.dataset)
+    else:
+        for root, dirs, files in os.walk(args.dataset):
+            for dir in dirs:
+                if dir.startswith("demo"):
+                    dirs.remove(dir)
+            hdf5_files.extend([os.path.join(root, f) for f in files if f.endswith(".hdf5")])
 
-        env_meta = get_env_metadata_from_dataset(dataset_path=args.dataset)
-        if args.use_abs_actions:
-            env_meta["env_kwargs"]["controller_configs"][
-                "control_delta"
-            ] = False  # absolute action space
+    for hdf5_file in tqdm(hdf5_files):
+        # create environment only if not playing back with observations
+        if not args.use_obs:
+            # # need to make sure ObsUtils knows which observations are images, but it doesn't matter
+            # # for playback since observations are unused. Pass a dummy spec here.
+            # dummy_spec = dict(
+            #     obs=dict(
+            #             low_dim=["robot0_eef_pos"],
+            #             rgb=[],
+            #         ),
+            # )
+            # initialize_obs_utils_with_obs_specs(obs_modality_specs=dummy_spec)
 
-        env_kwargs = env_meta["env_kwargs"]
-        env_kwargs["env_name"] = env_meta["env_name"]
-        env_kwargs["has_renderer"] = False
-        env_kwargs["renderer"] = "mjviewer"
-        env_kwargs["has_offscreen_renderer"] = write_video
-        env_kwargs["use_camera_obs"] = False
+            env_meta = get_env_metadata_from_dataset(dataset_path=hdf5_file)
+            if args.use_abs_actions:
+                env_meta["env_kwargs"]["controller_configs"][
+                    "control_delta"
+                ] = False  # absolute action space
 
-        if args.debug:
-            print(
-                colored(
-                    "Initializing environment for {}...".format(env_kwargs["env_name"]),
-                    "yellow",
+            env_kwargs = env_meta["env_kwargs"]
+            env_kwargs["env_name"] = env_meta["env_name"]
+            env_kwargs["has_renderer"] = False
+            env_kwargs["renderer"] = "mjviewer"
+            env_kwargs["has_offscreen_renderer"] = write_video
+            env_kwargs["use_camera_obs"] = False
+
+            if args.debug:
+                print(
+                    colored(
+                        "Initializing environment for {}...".format(env_kwargs["env_name"]),
+                        "yellow",
+                    )
                 )
-            )
 
-        env = robosuite.make(**env_kwargs)
+            env = robosuite.make(**env_kwargs)
 
-    f = h5py.File(args.dataset, "r")
+        f = h5py.File(hdf5_file, "r")
 
-    # list of all demonstration episodes (sorted in increasing number order)
-    if args.filter_key is not None:
-        print("using filter key: {}".format(args.filter_key))
-        demos = [
-            elem.decode("utf-8")
-            for elem in np.array(f["mask/{}".format(args.filter_key)])
-        ]
-    elif "data" in f.keys():
-        demos = list(f["data"].keys())
+        # list of all demonstration episodes (sorted in increasing number order)
+        if args.filter_key is not None:
+            print("using filter key: {}".format(args.filter_key))
+            demos = [
+                elem.decode("utf-8")
+                for elem in np.array(f["mask/{}".format(args.filter_key)])
+            ]
+        elif "data" in f.keys():
+            demos = list(f["data"].keys())
 
-    inds = np.argsort([int(elem[5:]) for elem in demos])
-    demos = [demos[i] for i in inds]
+        inds = np.argsort([int(elem[5:]) for elem in demos])
+        demos = [demos[i] for i in inds]
 
-    # maybe reduce the number of demonstrations to playback
-    if args.n is not None:
-        random.shuffle(demos)
-        demos = demos[:args.n]
+        # maybe reduce the number of demonstrations to playback
+        if args.n is not None:
+            random.shuffle(demos)
+            demos = demos[:args.n]
 
-    for ind in range(len(demos)):
-        ep = demos[ind]
-        print(colored("\nPlaying back episode: {}".format(ep), "yellow"))
+        for ind in range(len(demos)):
+            ep = demos[ind]
+            if len(demos) > 1:
+                ep_file = demos[ind]
+                print(colored("\nPlaying back episode: {}".format(ep), "yellow"))
+            else:
+                ep_file = hdf5_file.split("/")[-2]
+            src_ep_path = os.path.join(src_path, ep_file, "videos")
+            if not os.path.exists(src_ep_path):
+                os.makedirs(src_ep_path)
+            else:
+                os.system(f"rm -rf {src_ep_path}/*")
+                # raise ValueError("Episode {} already exists".format(ep))
 
-        src_ep_path = os.path.join(src_path, ep, "videos")
-        if not os.path.exists(src_ep_path):
-            os.makedirs(src_ep_path)
-        else:
-            raise ValueError("Episode {} already exists".format(ep))
+            video_writers = []
+            for camera in args.render_image_names:
+                video_path = os.path.join(src_ep_path, "{}.mp4".format(camera))
+                video_writer = imageio.get_writer(
+                    video_path, fps=20, codec="av1", pixelformat="yuv420p"
+                )
+                video_writers.append(video_writer)
 
-        video_writers = []
-        for camera in args.render_image_names:
-            video_path = os.path.join(src_ep_path, "{}.mp4".format(camera))
-            video_writer = imageio.get_writer(
-                video_path, fps=20, codec="av1", pixelformat="yuv420p"
-            )
-            video_writers.append(video_writer)
+            if args.use_obs:
+                playback_trajectory_with_obs_multi_cam(
+                    traj_grp=f["data/{}".format(ep)],
+                    video_writers=video_writers,
+                    video_skip=args.video_skip,
+                    image_names=args.render_image_names,
+                    first=args.first,
+                )
+                for video_writer in video_writers:
+                    video_writer.close()
+                continue
 
-        if args.use_obs:
-            playback_trajectory_with_obs_multi_cam(
-                traj_grp=f["data/{}".format(ep)],
+            # prepare initial state to reload from
+            states = f["data/{}/states".format(ep)][()]
+            initial_state = dict(states=states[0])
+            initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"]
+            initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get("ep_meta", None)
+
+            if args.extend_states:
+                states = np.concatenate((states, [states[-1]] * 50))
+
+            # supply actions if using open-loop action playback
+            actions = None
+            assert not (
+                args.use_actions and args.use_abs_actions
+            )  # cannot use both relative and absolute actions
+            if args.use_actions:
+                actions = f["data/{}/actions".format(ep)][()]
+            elif args.use_abs_actions:
+                actions = f["data/{}/actions_abs".format(ep)][()]  # absolute actions
+
+            playback_trajectory_with_env_multi_cam(
+                env=env,
+                initial_state=initial_state,
+                states=states,
+                actions=actions,
+                render=args.render,
                 video_writers=video_writers,
                 video_skip=args.video_skip,
-                image_names=args.render_image_names,
+                camera_names=args.render_image_names,
                 first=args.first,
+                verbose=args.debug,
+                camera_height=args.camera_height,
+                camera_width=args.camera_width,
             )
             for video_writer in video_writers:
                 video_writer.close()
-            continue
 
-        # prepare initial state to reload from
-        states = f["data/{}/states".format(ep)][()]
-        initial_state = dict(states=states[0])
-        initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"]
-        initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get("ep_meta", None)
+        f.close()
+        if write_video:
+            print(colored("Saved videos to {}".format(src_ep_path), "green"))
 
-        if args.extend_states:
-            states = np.concatenate((states, [states[-1]] * 50))
-
-        # supply actions if using open-loop action playback
-        actions = None
-        assert not (
-            args.use_actions and args.use_abs_actions
-        )  # cannot use both relative and absolute actions
-        if args.use_actions:
-            actions = f["data/{}/actions".format(ep)][()]
-        elif args.use_abs_actions:
-            actions = f["data/{}/actions_abs".format(ep)][()]  # absolute actions
-
-        playback_trajectory_with_env_multi_cam(
-            env=env,
-            initial_state=initial_state,
-            states=states,
-            actions=actions,
-            render=args.render,
-            video_writers=video_writers,
-            video_skip=args.video_skip,
-            camera_names=args.render_image_names,
-            first=args.first,
-            verbose=args.debug,
-            camera_height=args.camera_height,
-            camera_width=args.camera_width,
-        )
-        for video_writer in video_writers:
-            video_writer.close()
-
-    f.close()
-    if write_video:
-        print(colored("Saved videos to {}".format(src_path), "green"))
-
-    if env is not None:
-        env.close()
+        if env is not None:
+            env.close()
 
 
 def get_playback_args():
@@ -319,7 +341,8 @@ def get_playback_args():
     parser.add_argument(
         "--dataset",
         type=str,
-        help="path to hdf5 dataset",
+        default="/data/ceph_hdd/main/dev/zim.gong/data-collection-3000/ArrangeBreadBasket",
+        help="path to hdf5 dataset or directory of hdf5 files",
     )
     parser.add_argument(
         "--filter_key",
@@ -416,16 +439,23 @@ def get_playback_args():
     parser.add_argument(
         "--camera_height",
         type=int,
-        default=512,
+        default=224,
         help="(optional, for offscreen rendering) height of image observations",
     )
 
     parser.add_argument(
         "--camera_width",
         type=int,
-        default=512,
+        default=224,
         help="(optional, for offscreen rendering) width of image observations",
     )
+
+    # parser.add_argument(
+    #     "--format",
+    #     type=str,
+    #     default="robocasa",
+    #     help="(optional) choose between robocasa and lightwheel format",
+    # )
 
     args = parser.parse_args()
     return args

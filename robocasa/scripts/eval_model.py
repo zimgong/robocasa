@@ -77,19 +77,16 @@ def eval_model_with_env(
         policy_obs = {}
         policy_obs["observation.images.agentview_left"] = obs[
             "robot0_agentview_left_image"
-        ]
+        ].transpose(2, 0, 1)
         policy_obs["observation.images.agentview_right"] = obs[
             "robot0_agentview_right_image"
-        ]
-        policy_obs["observation.images.agentview_center"] = obs[
-            "robot0_agentview_center_image"
-        ]
+        ].transpose(2, 0, 1)
         policy_obs["observation.images.robot0_eye_in_hand"] = obs[
             "robot0_eye_in_hand_image"
-        ]
-        policy_obs["observation.states"] = obs["robot0_joint_pos"]
-        action = policy.select_action(policy_obs)
-        action = np.zeros((states.shape[0], 12))
+        ].transpose(2, 0, 1)
+        # policy_obs["observation.states"] = obs["robot0_joint_pos"]
+        # action = policy.select_action(policy_obs)
+        action = np.zeros(12)
         env.step(action)
         if i < traj_len - 1:
             # check whether the actions deterministically lead to the same recorded states

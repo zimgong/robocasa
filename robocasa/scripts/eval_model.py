@@ -70,7 +70,7 @@ def eval_model_with_env(
     if render is False:
         print(colored("Running episode...", "yellow"))
 
-    obs, _, _, _ = env.step(np.zeros((12,)))
+    obs, _, _, _ = env.step(np.zeros(env.action_dim))
     for i in range(traj_len - 1):
         start = time.time()
 
@@ -86,8 +86,8 @@ def eval_model_with_env(
         ].transpose(2, 0, 1)
         # policy_obs["observation.states"] = obs["robot0_joint_pos"]
         # action = policy.select_action(policy_obs)
-        action = np.zeros(12)
-        env.step(action)
+        action = np.zeros(env.action_dim)
+        obs, _, _, _ = env.step(action)
         if i < traj_len - 1:
             # check whether the actions deterministically lead to the same recorded states
             state_playback = np.array(env.sim.get_state().flatten())

@@ -3,6 +3,8 @@ import json
 import os
 import random
 import time
+import pickle
+import torch
 
 import h5py
 import imageio
@@ -12,8 +14,17 @@ from termcolor import colored
 
 import robocasa
 
-# from lerobot.common.policies.factory import make_policy
-# from lerobot.configs.policies import PreTrainedConfig
+from lerobot.common.policies.factory import make_policy
+from lerobot.configs.policies import PreTrainedConfig
+
+
+def get_task_instruction(f: h5py.File, task_demos: list[str]) -> dict:
+    """Get task language instruction"""
+    ep = task_demos[0]
+    ep_meta = json.loads(f["data/{}".format(ep)].attrs["ep_meta"])
+    task_instruction = ep_meta["lang"]
+    print(f"Get Task Instruction <{task_instruction}>")
+    return task_instruction
 
 
 def eval_model_with_env(
@@ -21,6 +32,7 @@ def eval_model_with_env(
     initial_state,
     states,
     policy,
+    task_name,
     render=False,
     video_writer=None,
     video_skip=5,
@@ -29,6 +41,7 @@ def eval_model_with_env(
     verbose=False,
     camera_height=512,
     camera_width=512,
+    mode="replay",
 ):
     """
     Helper function to playback a single trajectory using the simulator environment.
@@ -47,6 +60,10 @@ def eval_model_with_env(
             one to output a video with multiple camera views concatenated horizontally.
         first (bool): if True, only use the first frame of each episode.
     """
+    if mode != "replay":
+        device = policy.config.device
+    else:
+        device = None
     write_video = video_writer is not None
     video_count = 0
     assert not (render and write_video)
@@ -71,22 +88,52 @@ def eval_model_with_env(
         print(colored("Running episode...", "yellow"))
 
     obs, _, _, _ = env.step(np.zeros(env.action_dim))
-    for i in range(traj_len - 1):
+    for i in range(5 * traj_len - 1):
         start = time.time()
 
-        policy_obs = {}
-        policy_obs["observation.images.agentview_left"] = obs[
-            "robot0_agentview_left_image"
-        ].transpose(2, 0, 1)
-        policy_obs["observation.images.agentview_right"] = obs[
-            "robot0_agentview_right_image"
-        ].transpose(2, 0, 1)
-        policy_obs["observation.images.robot0_eye_in_hand"] = obs[
-            "robot0_eye_in_hand_image"
-        ].transpose(2, 0, 1)
-        # policy_obs["observation.states"] = obs["robot0_joint_pos"]
-        # action = policy.select_action(policy_obs)
-        action = np.zeros(env.action_dim)
+        if mode != "replay":
+            policy_obs = {}
+            policy_obs["observation.images.agentview_left"] = (
+                torch.from_numpy(obs["robot0_agentview_left_image"].transpose(2, 0, 1))
+                .unsqueeze(0)
+                .to(device)
+                .to(torch.float32)
+            )
+            policy_obs["observation.images.agentview_right"] = (
+                torch.from_numpy(obs["robot0_agentview_right_image"].transpose(2, 0, 1))
+                .unsqueeze(0)
+                .to(device)
+                .to(torch.float32)
+            )
+            policy_obs["observation.images.robot0_eye_in_hand"] = (
+                torch.from_numpy(obs["robot0_eye_in_hand_image"].transpose(2, 0, 1))
+                .unsqueeze(0)
+                .to(device)
+                .to(torch.float32)
+            )
+            policy_obs["observation.state"] = [0, 0, 0, 0]
+            policy_obs["observation.state"].extend(obs["robot0_joint_pos"])
+            policy_obs["observation.state"].extend(obs["robot0_gripper_qpos"])
+            policy_obs["observation.state"] = (
+                torch.tensor(policy_obs["observation.state"], device=device)
+                .unsqueeze(0)
+                .to(torch.float32)
+            )
+            policy_obs["task"] = [task_name]
+            action_policy = policy.select_action(policy_obs).flatten().cpu().numpy()
+            action = []
+            action.extend(action_policy[4:])
+            action.extend([0, 0, 0, 0])
+            action = np.array(action, dtype=np.float32)
+        else:
+            action = []
+            if i + 1 < traj_len:
+                action.extend(states[i + 1, 5:14])
+            else:
+                action.extend(states[-1, 5:14])
+            action.extend([0, 0, 0, 0])
+            action = np.array(action, dtype=np.float32)
+        # action = np.zeros(env.action_dim)
         obs, _, _, _ = env.step(action)
         if i < traj_len - 1:
             # check whether the actions deterministically lead to the same recorded states
@@ -247,14 +294,22 @@ def reset_to(env, state):
 
 
 def eval_model(args):
-    # load model
-    device = "cuda"
-    ckpt_torch_dir = "lerobot/pi0"
+    if args.mode == "replay":
+        policy = None
+    else:
+        # load model
+        device = "cuda"
+        # ckpt_torch_dir = "lerobot/pi0"
+        ckpt_torch_dir = "/data/ceph_hdd/main/dev/shaoze.yang/code_ly/openpi/checkpoints/pi0_0330_30000_pytorch"
 
-    # cfg = PreTrainedConfig.from_pretrained(ckpt_torch_dir)
-    # cfg.pretrained_path = ckpt_torch_dir
-    # policy = make_policy(cfg)
-    policy = None
+        cfg = PreTrainedConfig.from_pretrained(ckpt_torch_dir)
+        cfg.pretrained_path = ckpt_torch_dir
+        dataset_meta = pickle.load(
+            open(
+                "/data/ceph_hdd/main/datasets/lerobot/robocasa/v0.1/meta/meta.pkl", "rb"
+            )
+        )
+        policy = make_policy(cfg, ds_meta=dataset_meta)
 
     # some arg checking
     write_video = args.render is not True
@@ -293,6 +348,12 @@ def eval_model(args):
     env_kwargs["camera_heights"] = 224
     env_kwargs["camera_widths"] = 224
 
+    env_kwargs[
+        "controller_configs"
+    ] = robosuite.controllers.load_composite_controller_config(
+        controller="/data/ceph_hdd/main/dev/zim.gong/robosuite/robosuite/controllers/config/robots/custom_pandaomron.json"
+    )
+
     if args.verbose:
         print(
             colored(
@@ -322,6 +383,8 @@ def eval_model(args):
     if args.n is not None:
         random.shuffle(demos)
         demos = demos[: args.n]
+
+    task_name = get_task_instruction(f, demos)
 
     # maybe dump video
     video_writer = None
@@ -356,6 +419,7 @@ def eval_model(args):
             initial_state=initial_state,
             states=states,
             policy=policy,
+            task_name=task_name,
             render=args.render,
             video_writer=video_writer,
             video_skip=args.video_skip,
@@ -364,6 +428,7 @@ def eval_model(args):
             verbose=args.verbose,
             camera_height=args.camera_height,
             camera_width=args.camera_width,
+            mode=args.mode,
         )
 
     f.close()
@@ -479,6 +544,13 @@ def get_eval_args():
         type=int,
         default=512,
         help="(optional, for offscreen rendering) width of image observations",
+    )
+
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="replay",
+        help="mode to use",
     )
 
     args = parser.parse_args()

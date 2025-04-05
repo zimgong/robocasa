@@ -10,6 +10,9 @@ import h5py
 import imageio
 import numpy as np
 import robosuite
+from robosuite.controllers.composite.composite_controller_factory import (
+    refactor_composite_controller_config,
+)
 from termcolor import colored
 
 import robocasa
@@ -87,53 +90,69 @@ def eval_model_with_env(
     if render is False:
         print(colored("Running episode...", "yellow"))
 
-    obs, _, _, _ = env.step(np.zeros(env.action_dim))
-    for i in range(5 * traj_len - 1):
+    neutral = np.zeros(env.action_dim)
+    obs, _, _, _ = env.step(neutral)
+    policy_skip = 2
+    count = 0
+    action = neutral.copy()
+    if mode == "replay":
+        num_test_steps = traj_len - 1
+    else:
+        num_test_steps = 5 * traj_len - 1
+
+    for i in range(num_test_steps):
         start = time.time()
 
         if mode != "replay":
-            policy_obs = {}
-            policy_obs["observation.images.agentview_left"] = (
-                torch.from_numpy(obs["robot0_agentview_left_image"].transpose(2, 0, 1))
-                .unsqueeze(0)
-                .to(device)
-                .to(torch.float32)
-            )
-            policy_obs["observation.images.agentview_right"] = (
-                torch.from_numpy(obs["robot0_agentview_right_image"].transpose(2, 0, 1))
-                .unsqueeze(0)
-                .to(device)
-                .to(torch.float32)
-            )
-            policy_obs["observation.images.robot0_eye_in_hand"] = (
-                torch.from_numpy(obs["robot0_eye_in_hand_image"].transpose(2, 0, 1))
-                .unsqueeze(0)
-                .to(device)
-                .to(torch.float32)
-            )
-            policy_obs["observation.state"] = [0, 0, 0, 0]
-            policy_obs["observation.state"].extend(obs["robot0_joint_pos"])
-            policy_obs["observation.state"].extend(obs["robot0_gripper_qpos"])
-            policy_obs["observation.state"] = (
-                torch.tensor(policy_obs["observation.state"], device=device)
-                .unsqueeze(0)
-                .to(torch.float32)
-            )
-            policy_obs["task"] = [task_name]
-            action_policy = policy.select_action(policy_obs).flatten().cpu().numpy()
-            action = []
-            action.extend(action_policy[4:])
-            action.extend([0, 0, 0, 0])
-            action = np.array(action, dtype=np.float32)
+            if count % policy_skip == 0:
+                policy_obs = {}
+                policy_obs["observation.images.agentview_left"] = (
+                    torch.from_numpy(
+                        obs["robot0_agentview_left_image"].transpose(2, 0, 1)
+                    )
+                    .unsqueeze(0)
+                    .to(device)
+                    .to(torch.float32)
+                )
+                policy_obs["observation.images.agentview_right"] = (
+                    torch.from_numpy(
+                        obs["robot0_agentview_right_image"].transpose(2, 0, 1)
+                    )
+                    .unsqueeze(0)
+                    .to(device)
+                    .to(torch.float32)
+                )
+                policy_obs["observation.images.robot0_eye_in_hand"] = (
+                    torch.from_numpy(obs["robot0_eye_in_hand_image"].transpose(2, 0, 1))
+                    .unsqueeze(0)
+                    .to(device)
+                    .to(torch.float32)
+                )
+                policy_obs["observation.state"] = [0, 0, 0, 0]
+                policy_obs["observation.state"].extend(obs["robot0_joint_pos"])
+                policy_obs["observation.state"].extend(obs["robot0_gripper_qpos"])
+                policy_obs["observation.state"] = (
+                    torch.tensor(policy_obs["observation.state"], device=device)
+                    .unsqueeze(0)
+                    .to(torch.float32)
+                )
+                policy_obs["task"] = [task_name]
+                action_policy = policy.select_action(policy_obs).flatten().cpu().numpy()
+                action = []
+                action.extend(action_policy[4:])
+                action.extend([0, 0, 0, 0])
+                action = np.array(action, dtype=np.float32)
+            count = (count + 1) % policy_skip
         else:
             action = []
             if i + 1 < traj_len:
-                action.extend(states[i + 1, 5:14])
+                action.extend(states[i + 1, 5:12])
+                action.extend(states[i + 1, 12:14])
+                print(f"gripper action: {action[-2:]}")
             else:
                 action.extend(states[-1, 5:14])
             action.extend([0, 0, 0, 0])
             action = np.array(action, dtype=np.float32)
-        # action = np.zeros(env.action_dim)
         obs, _, _, _ = env.step(action)
         if i < traj_len - 1:
             # check whether the actions deterministically lead to the same recorded states
@@ -348,10 +367,14 @@ def eval_model(args):
     env_kwargs["camera_heights"] = 224
     env_kwargs["camera_widths"] = 224
 
+    controller_path = os.path.join(
+        os.path.dirname(robosuite.__file__),
+        "controllers/config/robots/custom_pandaomron.json",
+    )
     env_kwargs[
         "controller_configs"
     ] = robosuite.controllers.load_composite_controller_config(
-        controller="/data/ceph_hdd/main/dev/zim.gong/robosuite/robosuite/controllers/config/robots/custom_pandaomron.json"
+        controller=controller_path
     )
 
     if args.verbose:
